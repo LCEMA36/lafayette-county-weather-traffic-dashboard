@@ -28,7 +28,11 @@ Overview, NWS forecasts and alerts, SPC outlooks, KUOX current conditions, group
 
 ## Publication
 
-The repository starts private. Creating this repository does not publish the website. Hosting and any change to public visibility should be configured separately after review.
+The repository is public, and GitHub Pages publishes the dashboard from the root of the `main` branch.
+
+**Live dashboard:** [Lafayette County Weather & Traffic Awareness Dashboard](https://lcema36.github.io/lafayette-county-weather-traffic-dashboard/)
+
+Updates saved to `main` trigger a new website deployment. GitHub Pages serves the static dashboard over HTTPS; it does not run a server-side Waze proxy.
 
 ## Branding
 
