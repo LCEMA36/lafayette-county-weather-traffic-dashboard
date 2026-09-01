@@ -1,0 +1,12 @@
+.DS_Store
+.env
+.env.*
+!.env.example
+node_modules/
+*.log
+
+# Private/generated traffic data is not part of the source upload.
+waze.json
+
+# Earlier local dashboard drafts are retained locally, not in the repository.
+lcema_weather_command_dashboard_v*.html
