@@ -20,7 +20,8 @@ Overview, NWS forecasts and alerts, SPC outlooks, KUOX current conditions, group
 
 - Weather data and imagery require an internet connection and depend on the availability of external NWS/NOAA services.
 - KUOX observations are checked every three minutes. The source observation may be older than the latest check.
-- Waze requires a separately configured same-origin `waze.json` feed or a proxy URL in `WAZE_CONFIG`. No private Waze partner URL or credentials are included. Keep credentials server-side and review Waze's sharing requirements before publishing traffic data.
+- Waze uses the dedicated Cloudflare endpoint configured in `WAZE_CONFIG`. Connection code and setup notes are in `cloudflare/`. Public traffic remains disabled until the partner-sharing permission is confirmed, the private feed URL is saved as a Cloudflare secret, and the release switch is enabled. No private Waze link or credentials are included in this repository.
+- Missing, invalid or more-than-ten-minute-old Waze data displays as unavailable, never an all-clear. Source update time and connection-check time are separate. Repeated roads remain expandable groups.
 - The current weather graphic uses NWS Memphis Graphicast slot `4.png`, checked every five minutes. The image in that slot can change; the dashboard does not automatically detect changes to which slot leads the NWS homepage.
 - Summaries are rule-based excerpts and aggregates created in the browser, not calls to an AI model, despite the current alert-summary label. Official NWS products remain authoritative.
 - Email actions prepare a draft; they do not send mail. Image links are included rather than embedded image attachments.
@@ -32,7 +33,7 @@ The repository is public, and GitHub Pages publishes the dashboard from the root
 
 **Live dashboard:** [Lafayette County Weather & Traffic Awareness Dashboard](https://lcema36.github.io/lafayette-county-weather-traffic-dashboard/)
 
-Updates saved to `main` trigger a new website deployment. GitHub Pages serves the static dashboard over HTTPS; it does not run a server-side Waze proxy.
+Updates saved to `main` trigger a new website deployment. GitHub Pages serves the static dashboard over HTTPS; the Waze connection runs separately in Cloudflare. Updating the Worker source in this repository does not automatically deploy it to Cloudflare.
 
 ## Branding
 

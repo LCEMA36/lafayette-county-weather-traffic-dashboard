@@ -634,9 +634,9 @@ a{color:var(--navy);}
     <details class="wz-diag" id="waze-diag-wrap">
       <summary>🔌 Feed connection diagnostics</summary>
       <div id="waze-diag"><div class="wz-dm" style="padding:6px 0;">Not run yet.</div></div>
-      <div class="wz-dhelp">Routes are tried top to bottom; the first success wins. A same-origin
-        <code>waze.json</code> or your own Worker will always beat the public proxies.</div>
+      <div class="wz-dhelp">Only a successfully loaded, recent feed is counted as available. Missing or stale data does not mean the roads are clear.</div>
     </details>
+    <div class="znote">Data provided by <a href="https://www.waze.com/" target="_blank" rel="noopener">Waze App</a>. Learn more at <a href="https://www.waze.com/" target="_blank" rel="noopener">Waze.com</a>. Crowd-sourced reports are unverified.</div>
   </div>
 
   <!-- Live map -->
@@ -965,8 +965,9 @@ function renderOverview(){
   const closed=[...new Set((wazeAlerts||[]).filter(a=>a.type==='ROAD_CLOSED').map(a=>wzPlace(a)))];
   const crashes=(wazeAlerts||[]).filter(a=>a.type==='ACCIDENT').length;
   const severeJams=(wazeJams||[]).filter(j=>(j.level||0)>=3||(j.delay??0)<0).length;
-  document.getElementById('overview-traffic-value').textContent=closed.length?`${closed.length} Closure${closed.length!==1?'s':''}`:crashes?`${crashes} Crash${crashes!==1?'es':''}`:'No Closures';
-  document.getElementById('overview-traffic-detail').textContent=`${crashes} crash report${crashes!==1?'s':''} · ${severeJams} heavy or blocked congestion segment${severeJams!==1?'s':''}.`;
+  const trafficFresh=wazeIsFresh();
+  document.getElementById('overview-traffic-value').textContent=!trafficFresh?(wazeState.phase==='loading'?'Checking…':'Data Unavailable'):closed.length?`${closed.length} Closure${closed.length!==1?'s':''}`:crashes?`${crashes} Crash${crashes!==1?'es':''}`:'No Reported Closures';
+  document.getElementById('overview-traffic-detail').textContent=trafficFresh?`${crashes} crash report${crashes!==1?'s':''} · ${severeJams} heavy or blocked congestion segment${severeJams!==1?'s':''}. Unverified Waze reports.`:'Traffic conditions cannot be confirmed. Check Waze Live Map or official road reports.';
 
   const days=window._forecastDays||[];
   document.getElementById('overview-forecast-days').innerHTML=days.length?days.map(d=>`<div class="overview-mini-day"><div class="overview-mini-name">${esc(d.label)}</div><div class="overview-mini-icon">${wIcon(d.shortForecast)}</div><div class="overview-mini-temp">${d.high}° / ${d.low==='--'?'—':d.low+'°'}</div><div class="overview-mini-desc">${esc(d.shortForecast)}</div></div>`).join(''):'<div class="lmsg">Loading the five-day outlook…</div>';
@@ -1990,17 +1991,10 @@ async function loadMETAR(){
    so no county filtering is required.
    ═══════════════════════════════════════════════════════════════════ */
 const WAZE_CONFIG={
-  // Keep the private Waze partner URL out of public HTML. Supply waze.json from
-  // a scheduled GitHub Action or set an LCEMA-controlled proxy URL below.
-  feedUrl:'',
-
-  // ① MOST RELIABLE — same-origin JSON written into the repo by a GitHub Action
-  //    every 5 min. Skipped automatically if the file isn't there yet.
-  localCache:'./waze.json',
-
-  // ② BEST FOR REAL-TIME — paste your own Cloudflare Worker URL here, e.g.
-  //    'https://lcema-waze.beaumoore.workers.dev'
-  proxyUrl:''
+  // Public sanitized endpoint only. The private partner URL stays in Cloudflare.
+  localCache:'',
+  proxyUrl:'https://lcema-waze.bmoore-bcc.workers.dev/waze.json',
+  maxAgeMs:600000
 };
 
 function wazeSources(){
@@ -2011,6 +2005,21 @@ function wazeSources(){
 }
 
 let wazeAlerts=[],wazeJams=[],wazeVia='',wazeDiag=[];
+let wazeBusy=false;
+const wazeState={phase:'loading',sourceUpdatedAt:null,lastSuccess:null};
+function wazeIsFresh(){
+  const age=Date.now()-wazeState.sourceUpdatedAt;
+  return wazeState.phase==='live'&&Number.isFinite(wazeState.sourceUpdatedAt)&&age>=-120000&&age<=WAZE_CONFIG.maxAgeMs;
+}
+function wazeTimestamp(d){
+  const values=[d.meta?.sourceUpdatedAt,d.endTimeMillis,d.endTime,d.startTimeMillis,d.startTime];
+  for(const value of values){
+    if(value==null||value==='')continue;
+    const ms=typeof value==='number'?value:Date.parse(value);
+    if(Number.isFinite(ms)&&ms>0)return ms;
+  }
+  return NaN;
+}
 
 function esc(s){return String(s??'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 
@@ -2102,6 +2111,11 @@ async function fetchWaze(){
       let d=await r.json();
       if(!d||(!Array.isArray(d.alerts)&&!Array.isArray(d.jams)))
         throw new Error('Unexpected payload shape');
+      if((d.alerts!=null&&!Array.isArray(d.alerts))||(d.jams!=null&&!Array.isArray(d.jams)))
+        throw new Error('Invalid traffic collections');
+      const updated=wazeTimestamp(d),age=Date.now()-updated;
+      if(!Number.isFinite(updated)||age>WAZE_CONFIG.maxAgeMs||age< -120000)
+        throw new Error('Feed is stale or has no valid timestamp');
 
       wazeDiag.push({n:s.n,ok:true,
         msg:`${(d.alerts||[]).length} alerts / ${(d.jams||[]).length} jams · ${Date.now()-t0} ms`});
@@ -2133,6 +2147,8 @@ function renderWazeDiag(){
 
 /* ── Main loader ── */
 async function loadWaze(){
+  if(wazeBusy)return;
+  wazeBusy=true;
   const abody=document.getElementById('waze-alerts');
   const jbody=document.getElementById('waze-jams');
   const note =document.getElementById('waze-note');
@@ -2144,6 +2160,9 @@ async function loadWaze(){
     const d=await fetchWaze();
     wazeAlerts=Array.isArray(d.alerts)?d.alerts.slice():[];
     wazeJams  =Array.isArray(d.jams)  ?d.jams.slice()  :[];
+    wazeState.phase='live';
+    wazeState.sourceUpdatedAt=wazeTimestamp(d);
+    wazeState.lastSuccess=Date.now();
 
     // Severity sort: rank asc, then newest first
     wazeAlerts.sort((a,b)=>wzType(a).rank-wzType(b).rank||(b.pubMillis||0)-(a.pubMillis||0));
@@ -2157,53 +2176,57 @@ async function loadWaze(){
     wzDrawMap();
 
     live.classList.remove('stale');
-    livet.textContent='Live';
-    const win=d.startTime&&d.endTime?`Feed window ${d.startTime.slice(11,16)}–${d.endTime.slice(11,16)} UTC`:'';
+    livet.textContent='Connected';
+    const win=`Feed updated ${wzTime(wazeState.sourceUpdatedAt)}`;
     document.getElementById('waze-window').textContent=
       `Crowd-sourced driver reports & live jam telemetry for the LCEMA jurisdiction polygon. ${win}`;
     note.textContent=`Waze for Cities partner feed · ${wazeAlerts.length} incident report${wazeAlerts.length!==1?'s':''} · `+
       `${wazeJams.length} jam segment${wazeJams.length!==1?'s':''} · source: ${wazeVia}`;
-    document.getElementById('waze-upd').textContent='Updated '+
+    document.getElementById('waze-upd').textContent='Checked '+
       new Date().toLocaleString('en-US',{timeZone:'America/Chicago',hour:'numeric',minute:'2-digit',hour12:true})+' CT';
     buildTicker();
     renderOverview();
 
   }catch(e){
-    wazeAlerts=[];wazeJams=[];
-    live.classList.add('stale');livet.textContent='Offline';
-    document.getElementById('waze-stats').innerHTML='';
-    note.textContent='Could not reach the Waze feed through any available route.';
+    showWazeUnavailable();
     renderWazeDiag();
     const dw=document.getElementById('waze-diag-wrap');
     if(dw)dw.open=true;   // auto-expand diagnostics on failure
-    abody.innerHTML=`<div class="wz-fail">
-      <div class="wz-fail-h">⚠️ Waze feed unreachable from the browser</div>
-      <p>The dashboard could not find the same-origin <code>waze.json</code> file or reach the configured LCEMA proxy.</p>
-      <p><strong>Serve the private partner feed from your own origin.</strong> Two options:</p>
-      <ol>
-        <li><strong>GitHub Action</strong> (recommended for GitHub Pages) — a scheduled job pulls the
-        feed every 5 minutes and commits <code>waze.json</code> next to this page. No CORS at all,
-        and your feed URL stops being visible in the page source.</li>
-        <li><strong>Cloudflare Worker</strong> — a ~15-line proxy that adds the CORS header.
-        Real-time instead of 5-minute cached. Paste its URL into
-        <code>WAZE_CONFIG.proxyUrl</code> near the top of the script.</li>
-      </ol>
-      <p class="wz-fail-m">Expand <em>Feed connection diagnostics</em> above to see the result. If you're opening this file directly from your hard drive (<code>file://</code>), publish it or run a local server so the same-origin cache can load.</p>
-    </div>`;
-    jbody.innerHTML='<div class="no-alerts">No congestion data available.</div>';
-    const mm=document.getElementById('waze-mapmsg');
-    mm.style.display='flex';
-    mm.textContent='Waze feed unavailable — map cannot be drawn.';
     buildTicker();
     renderOverview();
+  }finally{
+    wazeBusy=false;
   }
+}
+
+function showWazeUnavailable(){
+  wazeState.phase='unavailable';
+  wazeAlerts=[];wazeJams=[];
+  document.getElementById('waze-live').classList.add('stale');
+  document.getElementById('waze-live-t').textContent='Unavailable';
+  document.getElementById('waze-stats').innerHTML='';
+  document.getElementById('waze-alert-ct').textContent='';
+  document.getElementById('waze-jam-ct').textContent='';
+  document.getElementById('waze-upd').textContent=wazeState.lastSuccess?'Last connected '+wzTime(wazeState.lastSuccess):'Not connected';
+  document.getElementById('waze-window').textContent='No current, verified feed connection. Traffic conditions are unknown.';
+  document.getElementById('waze-note').textContent='Traffic data is unavailable. This is not an all-clear.';
+  document.getElementById('waze-alerts').innerHTML=`<div class="wz-fail">
+    <div class="wz-fail-h">⚠️ Incident and hazard data unavailable</div>
+    <p>The Waze connection is not enabled, could not be reached, or returned outdated data. No current closure, crash, or hazard counts can be confirmed.</p>
+    <p><a class="alink" href="https://www.waze.com/live-map/directions?to=ll.34.3665%2C-89.5196" target="_blank" rel="noopener">Check Waze Live Map — Oxford ↗</a></p>
+    </div>`;
+  document.getElementById('waze-jams').innerHTML='<div class="no-alerts">Congestion data unavailable — road speeds and delays cannot be confirmed.</div>';
+  if(wzAlertLayer)wzAlertLayer.clearLayers();
+  if(wzJamLayer)wzJamLayer.clearLayers();
+  const msg=document.getElementById('waze-mapmsg');
+  msg.style.display='flex';msg.textContent='Waze traffic data unavailable — no current incidents or congestion can be confirmed.';
 }
 
 /* ── Stat tiles ── */
 function renderWazeStats(){
   const n=t=>wazeAlerts.filter(a=>wzType(a).cls===t).length;
   const closed=n('closed'),crash=n('accident'),haz=n('hazard'),con=n('construction'),pol=n('police');
-  const blocked=wazeJams.filter(j=>(j.delay??-1)<0).length;
+  const blocked=wazeJams.filter(j=>(j.delay??0)<0).length;
   const worst=wazeJams.reduce((m,j)=>Math.max(m,j.delay||0),0);
   document.getElementById('waze-stats').innerHTML=`
     <div class="wz-stat ${closed?'hot':''}"><div class="n">${closed}</div><div class="l">Road Closed</div></div>
@@ -2310,7 +2333,7 @@ function renderWazeJamRow(j){
     const lv=Math.max(0,Math.min(5,j.level||0));
     const col=JAM_HEX[lv];
     const pct=Math.round((lv/5)*100);
-    const blocked=(j.delay??-1)<0;
+    const blocked=(j.delay??0)<0;
     const mid=Array.isArray(j.line)&&j.line.length?j.line[Math.floor(j.line.length/2)]:null;
     return `<div class="wz-jam">
       <div class="wz-jlvl" style="background:${col};">
@@ -2336,10 +2359,10 @@ function renderWazeJamGroup(items){
   const first=items[0];
   const maxLevel=Math.max(...items.map(item=>Number(item.level)||0));
   const color=JAM_HEX[Math.max(0,Math.min(5,maxLevel))];
-  const blocked=items.some(item=>(item.delay??-1)<0);
+  const blocked=items.some(item=>(item.delay??0)<0);
   const maxDelay=Math.max(0,...items.map(item=>item.delay||0));
   const totalLength=items.reduce((sum,item)=>sum+(Number(item.length)||0),0);
-  const slowest=Math.min(...items.map(item=>Number(item.speedKMH)).filter(Number.isFinite));
+  const slowest=Math.min(...items.filter(item=>item.speedKMH!=null).map(item=>Number(item.speedKMH)).filter(Number.isFinite));
   return`<details class="wz-road-group">
     <summary>
       <span class="wz-jlvl" style="background:${color};width:44px;height:36px;"><span class="v">${maxLevel}</span><span class="k">${esc(JAM_LBL[maxLevel]||'Jam')}</span></span>
@@ -2391,7 +2414,7 @@ function wzDrawMap(){
     const ll=j.line.map(p=>[p.y,p.x]);
     pts.push(...ll);
     const lv=Math.max(0,Math.min(5,j.level||0));
-    const blocked=(j.delay??-1)<0;
+    const blocked=(j.delay??0)<0;
     L.polyline(ll,{color:JAM_HEX[lv],weight:7,opacity:.85,lineCap:'round',
                    dashArray:blocked?'1 9':null})
      .bindPopup(`<div class="wz-pop-t">${esc(j.street||'Unnamed segment')}</div>
@@ -2476,6 +2499,7 @@ function buildTicker(){
   });
 
   // Traffic — group repeated segments and report only actionable totals
+  if(!wazeIsFresh())items.push({b:'Traffic Unavailable',cls:'tk-info',t:'Waze conditions cannot be confirmed. Check Waze Live Map or official road reports.'});
   const closureRoads=[...new Set(wazeAlerts.filter(a=>a.type==='ROAD_CLOSED').map(a=>wzPlace(a)))];
   if(closureRoads.length)items.push({b:'Road Closures',cls:'tk-closed',t:`${closureRoads.length} road${closureRoads.length!==1?'s':''}: ${closureRoads.slice(0,3).join(', ')}${closureRoads.length>3?' +'+(closureRoads.length-3)+' more':''}`});
   const crashRoads=[...new Set(wazeAlerts.filter(a=>a.type==='ACCIDENT').map(a=>wzPlace(a)))];
@@ -2492,7 +2516,7 @@ function buildTicker(){
 
   if(window._nowLine)items.push({b:'Current Weather',cls:'tk-info',t:window._nowLine});
 
-  if(!items.length)items.push({b:'All Clear',cls:'tk-ok',t:'No active NWS alerts or Waze road closures for Lafayette County — monitoring continues'});
+  if(!items.length)items.push({b:'Monitor',cls:'tk-info',t:'No actionable items in the loaded feeds. Verify official sources before travel.'});
   items.push({b:'Data Check',cls:'tk-info',t:new Date().toLocaleString('en-US',{timeZone:'America/Chicago',hour:'numeric',minute:'2-digit',hour12:true})+' CT'});
 
   const html=items.map(i=>`<span class="tk"><span class="tk-b ${i.cls}">${esc(i.b)}</span><span class="tk-txt">${esc(i.t)}</span></span>`).join('');
@@ -2538,6 +2562,11 @@ refreshNWSGraphic();
 
 // Waze publishes on a ~2 min cadence — poll to match, keeps the ticker current
 setInterval(()=>{loadWaze();},120000);
+setInterval(()=>{
+  if(wazeState.phase==='live'&&!wazeIsFresh()){
+    showWazeUnavailable();buildTicker();renderOverview();
+  }
+},30000);
 // Pull the newest actual KUOX station observation every 3 minutes.
 setInterval(()=>{loadCurrentConditions();},180000);
 // Refresh the changing NWS Memphis Graphicast periodically without reloading the dashboard.
