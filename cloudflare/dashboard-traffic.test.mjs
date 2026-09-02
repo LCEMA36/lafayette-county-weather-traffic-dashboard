@@ -5,6 +5,18 @@ import vm from 'node:vm';
 
 const html = fs.readFileSync(new URL('../index.html', import.meta.url), 'utf8');
 const source = html.slice(html.indexOf('const WAZE_CONFIG='), html.indexOf('/* ── Stat tiles ── */'));
+
+test('traffic panel has no MDOT cameras and retains Waze sections and map link', () => {
+  assert.doesNotMatch(html, /vwall|reloadVWall|popVWall|mdottraffic\.com|\.vw-wrap/i);
+  for (const id of ['waze-map', 'waze-alerts', 'waze-jams']) {
+    assert.ok(html.includes(`id="${id}"`));
+  }
+  assert.match(html, /Waze Live Map — Oxford/);
+  for (const match of html.matchAll(/<script\b[^>]*>([\s\S]*?)<\/script>/gi)) {
+    if (match[1].trim()) new vm.Script(match[1]);
+  }
+});
+
 function harness(respond) {
   const els = new Map();
   const el = id => {
