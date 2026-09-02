@@ -51,7 +51,10 @@ test('release gate, path, method and upstream URL restrictions fail closed', asy
 
 test('live response is sanitized; cached responses avoid another upstream call', async t => {
   let saved, calls = 0;
-  t.mock.method(globalThis, 'fetch', async () => {calls++; return Response.json(fixture);});
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    assert.equal(options.redirect, 'manual');
+    calls++; return Response.json(fixture);
+  });
   t.mock.property(globalThis, 'caches', {default: {
     match: async () => saved?.clone(), put: async (_, response) => {saved = response;}
   }});
@@ -63,7 +66,27 @@ test('live response is sanitized; cached responses avoid another upstream call',
   assert.equal(calls, 1);
 });
 
+test('redirects are not followed and only the destination hostname is logged', async t => {
+  const logs = [];
+  t.mock.method(console, 'warn', (...args) => logs.push(args));
+  t.mock.property(globalThis, 'caches', {default: {match: async () => undefined}});
+  t.mock.method(globalThis, 'fetch', async (_, options) => {
+    assert.equal(options.redirect, 'manual');
+    return new Response(null, {status: 302, headers: {
+      location: 'https://www.waze.com/private-test-token?secret=private-test-secret'
+    }});
+  });
+  const response = await worker.fetch(req(), env, ctx);
+  assert.equal(response.status, 502);
+  assert.equal(logs[0][1].upstreamStatus, 302);
+  assert.equal(logs[0][1].redirectHost, 'www.waze.com');
+  assert.ok(!JSON.stringify(logs).includes('private-test'));
+  assert.ok(!(await response.text()).includes('private-test'));
+});
+
 test('upstream errors do not leak the feed URL or imply empty roads', async t => {
+  const logs = [];
+  t.mock.method(console, 'warn', (...args) => logs.push(args));
   t.mock.property(globalThis, 'caches', {default: {match: async () => undefined}});
   t.mock.method(globalThis, 'fetch', async () => {throw new Error(env.WAZE_FEED_URL);});
   const response = await worker.fetch(req(), env, ctx);
@@ -71,4 +94,6 @@ test('upstream errors do not leak the feed URL or imply empty roads', async t =>
   const body = await response.text();
   assert.ok(!body.includes('test-token'));
   assert.ok(!body.includes('"alerts":[]'));
+  assert.ok(!JSON.stringify(logs).includes('test-token'));
+  assert.equal(logs[0][1].reason, 'request');
 });

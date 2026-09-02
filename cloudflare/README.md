@@ -6,8 +6,13 @@ Deploy `waze-worker.mjs` as a Cloudflare Worker. No build step or third-party pa
 2. Confirm the Waze partner agreement permits the intended public display and include the required Waze attribution.
 3. Only then set the plain-text variable `PUBLIC_TRAFFIC_ENABLED` to `true`. Until then the endpoint responds with 503 without requesting or exposing Waze data.
 4. Point the dashboard's `WAZE_CONFIG.proxyUrl` to the deployed Worker's `/waze.json` endpoint.
+5. In Cloudflare's Deployments tab, promote the version containing the secret and runtime variable to 100%. Saving runtime variables can create a new version without activating it.
 
 The Worker fetches only its configured Waze feed; visitors cannot supply upstream URLs. It allows browser reads from `https://lcema36.github.io`, caches sanitized responses for up to two minutes, rejects stale/missing feed timestamps, and never returns raw errors. It publishes only the fields required by the traffic cards and map. Driver usernames, IDs, comments, free-text descriptions and images are not forwarded.
+
+Requests use manual redirect handling: redirects are rejected instead of automatically following another destination. Private Worker logs include only fixed error labels, HTTP status and an optional redirect hostname, never complete URLs, credentials or raw feed data.
+
+The live deployment was verified with a fresh feed in the public dashboard on September 1, 2026. Its incident map and expandable road groups loaded successfully. Recheck the dashboard's source timestamp after future deployments.
 
 **This is a public data endpoint after activation. CORS is not authentication.** The private upstream feed link stays secret, but the selected traffic reports are accessible to the public. Confirm permitted use before activation.
 

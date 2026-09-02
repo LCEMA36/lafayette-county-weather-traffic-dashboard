@@ -105,10 +105,16 @@ export default {
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
+    let stage = 'request', upstreamStatus, redirectHost;
     try {
-      const response = await fetch(feed.href, {signal: controller.signal, redirect: 'error',
+      const response = await fetch(feed.href, {signal: controller.signal, redirect: 'manual',
         headers: {'Accept': 'application/json'}});
+      upstreamStatus = response.status;
+      if (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+        redirectHost = new URL(response.headers.get('location'), feed).hostname;
+      }
       if (!response.ok) throw new Error('Upstream unavailable');
+      stage = 'body';
       if (Number(response.headers.get('content-length')) > MAX_BYTES) throw new Error('Feed too large');
       const reader = response.body.getReader();
       const chunks = []; let size = 0;
@@ -121,14 +127,21 @@ export default {
       }
       const bytes = new Uint8Array(size); let offset = 0;
       for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
-      const data = sanitizeFeed(JSON.parse(new TextDecoder().decode(bytes)));
+      stage = 'json';
+      const parsed = JSON.parse(new TextDecoder().decode(bytes));
+      stage = 'validation';
+      const data = sanitizeFeed(parsed);
       const cached = new Response(JSON.stringify(data), {headers: {
         'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=120'
       }});
       ctx.waitUntil(cache.put(key, cached).catch(() => {}));
       return json(data);
-    } catch {
+    } catch (error) {
       // Never echo upstream URLs, credentials, response bodies or exception text.
+      // Only fixed diagnostic labels and the HTTP status enter private Worker logs.
+      const reason = ['Invalid traffic data', 'Traffic feed is stale or has no valid timestamp',
+        'Feed too large'].includes(error?.message) ? error.message : stage;
+      console.warn('Waze feed unavailable', {reason, upstreamStatus, redirectHost});
       return json({error: 'Current Waze traffic data is unavailable. Check Waze Live Map.'}, 502);
     } finally { clearTimeout(timer); }
   }
